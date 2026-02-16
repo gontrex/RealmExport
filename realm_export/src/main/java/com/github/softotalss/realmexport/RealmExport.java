@@ -11,6 +11,7 @@
 
 package com.github.softotalss.realmexport;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
@@ -33,6 +34,7 @@ import io.realm.internal.RealmObjectProxy;
 import io.realm.internal.Row;
 import io.realm.internal.Table;
 
+@SuppressWarnings({"unused", "unchecked"})
 public class RealmExport {
 
     private static final String TABLE_PREFIX = "class_";
@@ -42,19 +44,20 @@ public class RealmExport {
     private final String nullValue;
     private final DateFormat dateTimeFormatter;
 
+    private final Gson gson;
+
     private RealmExport(RealmConfiguration configuration, String nullValue, DateFormat dateTimeFormatter) {
         this.configuration = configuration;
         this.nullValue = nullValue;
         this.dateTimeFormatter =  (dateTimeFormatter != null) ? dateTimeFormatter :
                 SimpleDateFormat.getDateTimeInstance(SimpleDateFormat.LONG, SimpleDateFormat.LONG);
+        this.gson = new Gson();
     }
 
-    @SuppressWarnings("WeakerAccess")
     public static RealmExport init(RealmConfiguration configuration, String nullValue, DateFormat dateTimeFormatter) {
         return new RealmExport(configuration, nullValue, dateTimeFormatter);
     }
 
-    @SuppressWarnings("WeakerAccess")
     public static RealmExport init(RealmConfiguration configuration, String nullValue) {
         return init(configuration, nullValue, null);
     }
@@ -63,7 +66,7 @@ public class RealmExport {
         return init(configuration, NULL);
     }
 
-    @SuppressWarnings({"ConstantConditions", "TryFinallyCanBeTryWithResources"})
+    @SuppressWarnings({"TryFinallyCanBeTryWithResources"})
     public JsonObject toJson() {
         JsonObject dbJson = new JsonObject();
 
@@ -82,12 +85,182 @@ public class RealmExport {
     }
 
     public void toJsonFile(String path) throws Exception {
-        BufferedWriter writer = new BufferedWriter(new FileWriter(new File(path), true));
+        final OsSharedRealm sharedRealm = OsSharedRealm.getInstance(configuration, OsSharedRealm.VersionID.LIVE);
+        BufferedWriter writer = null;
+
         try {
-            writer.write(toJson().toString());
+            File file = new File(path);
+            writer = new BufferedWriter(new FileWriter(file, true));
+
+            writer.write("{");
+
+            boolean firstTable = true;
+            for (String tableName : sharedRealm.getTablesNames()) {
+                if (!tableName.startsWith(TABLE_PREFIX)) continue;
+
+                if (!firstTable) {
+                    writer.write(",");
+                } else {
+                    firstTable = false;
+                }
+
+                writer.write("\"" + tableName + "\":");
+                writeTableJsonDirectly(sharedRealm.getTable(tableName), writer);
+            }
+
+            writer.write("}");
         } finally {
-            writer.flush();
-            writer.close();
+            if (writer != null) {
+                try {
+                    writer.close();
+                } catch (Exception ignore) {}
+            }
+            sharedRealm.close();
+        }
+    }
+
+    @SuppressWarnings({"TryFinallyCanBeTryWithResources"})
+    private void writeTableJsonDirectly(Table table, BufferedWriter writer) throws Exception {
+        Realm realm = null;
+        try {
+            realm = Realm.getDefaultInstance();
+            realm.refresh();
+
+            RealmResults<RealmModel> data = (RealmResults<RealmModel>) realm
+                    .where(getRealmModel(table.getClassName()))
+                    .findAll();
+
+            String[] columnNames = table.getColumnNames();
+            writer.write("[");
+
+            boolean firstRow = true;
+            for (RealmModel dataRow : data) {
+                if (!firstRow) {
+                    writer.write(",");
+                } else {
+                    firstRow = false;
+                }
+
+                Row row = ((RealmObjectProxy) dataRow).realmGet$proxyState().getRow$realm();
+                final RowWrapper rowData = RowWrapper.wrap(row);
+
+                JsonObject jsonObject = new JsonObject();
+                jsonObject.addProperty("index", rowData.getIndex());
+
+                for (String columnName : columnNames) {
+                    long column = table.getColumnKey(columnName);
+                    addJsonValue(jsonObject, table, rowData, columnName, column);
+                }
+
+                gson.toJson(jsonObject, writer);
+            }
+
+            writer.write("]");
+        } finally {
+            if (realm != null) realm.close();
+        }
+    }
+
+    private void addJsonValue(JsonObject jsonObject, Table table, RowWrapper rowData, String columnName, long column) {
+        switch (rowData.getColumnType(column)) {
+            case INTEGER:
+                if (rowData.isNull(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    jsonObject.addProperty(columnName, rowData.getLong(column));
+                }
+                break;
+            case BOOLEAN:
+                if (rowData.isNull(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    jsonObject.addProperty(columnName, rowData.getBoolean(column));
+                }
+                break;
+            case STRING:
+                if (rowData.isNull(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    jsonObject.addProperty(columnName, rowData.getString(column));
+                }
+                break;
+            case BINARY:
+                if (rowData.isNull(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    jsonObject.addProperty(columnName, rowData.getBinaryByteArray(column).toString());
+                }
+                break;
+            case FLOAT:
+                if (rowData.isNull(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    final float aFloat = rowData.getFloat(column);
+                    if (Float.isNaN(aFloat)) {
+                        jsonObject.addProperty(columnName, "NaN");
+                    } else if (aFloat == Float.POSITIVE_INFINITY) {
+                        jsonObject.addProperty(columnName, "Infinity");
+                    } else if (aFloat == Float.NEGATIVE_INFINITY) {
+                        jsonObject.addProperty(columnName, "-Infinity");
+                    } else {
+                        jsonObject.addProperty(columnName, aFloat);
+                    }
+                }
+                break;
+            case DOUBLE:
+                if (rowData.isNull(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    final double aDouble = rowData.getDouble(column);
+                    if (Double.isNaN(aDouble)) {
+                        jsonObject.addProperty(columnName, "NaN");
+                    } else if (aDouble == Double.POSITIVE_INFINITY) {
+                        jsonObject.addProperty(columnName, "Infinity");
+                    } else if (aDouble == Double.NEGATIVE_INFINITY) {
+                        jsonObject.addProperty(columnName, "-Infinity");
+                    } else {
+                        jsonObject.addProperty(columnName, aDouble);
+                    }
+                }
+                break;
+            case UNSUPPORTED_DATE:
+            case DATE:
+                if (rowData.isNull(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    jsonObject.addProperty(columnName, formatDate(rowData.getDate(column)));
+                }
+                break;
+            case OBJECT:
+                if (rowData.isNullLink(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    jsonObject.addProperty(columnName, rowData.getLink(column));
+                }
+                break;
+            case LIST:
+                jsonObject.addProperty(columnName, formatList(rowData.getLinkList(column)));
+                break;
+            case INTEGER_LIST:
+            case BOOLEAN_LIST:
+            case DOUBLE_LIST:
+            case STRING_LIST:
+            case BINARY_LIST:
+            case DATE_LIST:
+            case FLOAT_LIST:
+                if (rowData.isNullLink(column)) {
+                    jsonObject.addProperty(columnName, nullValue);
+                } else {
+                    RealmFieldType columnType = table.getColumnType(column);
+                    jsonObject.addProperty(
+                            columnName,
+                            formatValueList(rowData.getValueList(column, columnType), columnType)
+                    );
+                }
+                break;
+            default:
+                jsonObject.addProperty(columnName, "Unknown column type: " + rowData.getColumnType(column));
+                break;
         }
     }
 
@@ -161,62 +334,45 @@ public class RealmExport {
         RealmExportFieldType getColumnType(long columnIndex) {
             final Enum<?> columnType = row.getColumnType(columnIndex);
             final String name = columnType.name();
-            if (name.equals("INTEGER")) {
-                return RealmExportFieldType.INTEGER;
-            }
-            if (name.equals("BOOLEAN")) {
-                return RealmExportFieldType.BOOLEAN;
-            }
-            if (name.equals("STRING")) {
-                return RealmExportFieldType.STRING;
-            }
-            if (name.equals("BINARY")) {
-                return RealmExportFieldType.BINARY;
-            }
-            if (name.equals("UNSUPPORTED_TABLE")) {
-                return RealmExportFieldType.UNSUPPORTED_TABLE;
-            }
-            if (name.equals("UNSUPPORTED_MIXED")) {
-                return RealmExportFieldType.UNSUPPORTED_MIXED;
-            }
-            if (name.equals("UNSUPPORTED_DATE")) {
-                return RealmExportFieldType.UNSUPPORTED_DATE;
-            }
-            if (name.equals("DATE")) {
-                return RealmExportFieldType.DATE;
-            }
-            if (name.equals("FLOAT")) {
-                return RealmExportFieldType.FLOAT;
-            }
-            if (name.equals("DOUBLE")) {
-                return RealmExportFieldType.DOUBLE;
-            }
-            if (name.equals("OBJECT")) {
-                return RealmExportFieldType.OBJECT;
-            }
-            if (name.equals("LIST")) {
-                return RealmExportFieldType.LIST;
-            }
-            if (name.equals("INTEGER_LIST")) {
-                return RealmExportFieldType.INTEGER_LIST;
-            }
-            if (name.equals("BOOLEAN_LIST")) {
-                return RealmExportFieldType.BOOLEAN_LIST;
-            }
-            if (name.equals("STRING_LIST")) {
-                return RealmExportFieldType.STRING_LIST;
-            }
-            if (name.equals("BINARY_LIST")) {
-                return RealmExportFieldType.BINARY_LIST;
-            }
-            if (name.equals("DATE_LIST")) {
-                return RealmExportFieldType.DATE_LIST;
-            }
-            if (name.equals("FLOAT_LIST")) {
-                return RealmExportFieldType.FLOAT_LIST;
-            }
-            if (name.equals("DOUBLE_LIST")) {
-                return RealmExportFieldType.DOUBLE_LIST;
+            switch (name) {
+                case "INTEGER":
+                    return RealmExportFieldType.INTEGER;
+                case "BOOLEAN":
+                    return RealmExportFieldType.BOOLEAN;
+                case "STRING":
+                    return RealmExportFieldType.STRING;
+                case "BINARY":
+                    return RealmExportFieldType.BINARY;
+                case "UNSUPPORTED_TABLE":
+                    return RealmExportFieldType.UNSUPPORTED_TABLE;
+                case "UNSUPPORTED_MIXED":
+                    return RealmExportFieldType.UNSUPPORTED_MIXED;
+                case "UNSUPPORTED_DATE":
+                    return RealmExportFieldType.UNSUPPORTED_DATE;
+                case "DATE":
+                    return RealmExportFieldType.DATE;
+                case "FLOAT":
+                    return RealmExportFieldType.FLOAT;
+                case "DOUBLE":
+                    return RealmExportFieldType.DOUBLE;
+                case "OBJECT":
+                    return RealmExportFieldType.OBJECT;
+                case "LIST":
+                    return RealmExportFieldType.LIST;
+                case "INTEGER_LIST":
+                    return RealmExportFieldType.INTEGER_LIST;
+                case "BOOLEAN_LIST":
+                    return RealmExportFieldType.BOOLEAN_LIST;
+                case "STRING_LIST":
+                    return RealmExportFieldType.STRING_LIST;
+                case "BINARY_LIST":
+                    return RealmExportFieldType.BINARY_LIST;
+                case "DATE_LIST":
+                    return RealmExportFieldType.DATE_LIST;
+                case "FLOAT_LIST":
+                    return RealmExportFieldType.FLOAT_LIST;
+                case "DOUBLE_LIST":
+                    return RealmExportFieldType.DOUBLE_LIST;
             }
             return RealmExportFieldType.UNKNOWN;
         }
@@ -273,11 +429,8 @@ public class RealmExport {
     private Class<? extends RealmModel> getRealmModel(String name) {
         Set<Class<? extends RealmModel>> modelsRM = Realm.getDefaultInstance().getConfiguration().getRealmObjectClasses();
         for (Class<? extends RealmModel> model : modelsRM) {
-            if (model.getSimpleName().equals(name)) {
-                return model;
-            }
+            if (model.getSimpleName().equals(name)) return model;
         }
-
         return null;
     }
 
@@ -286,7 +439,9 @@ public class RealmExport {
 
         Realm realm = Realm.getDefaultInstance();
         realm.refresh();
-        RealmResults<RealmModel> data = (RealmResults<RealmModel>) realm.where(getRealmModel(table.getClassName())).findAll();
+        RealmResults<RealmModel> data = (RealmResults<RealmModel>) realm
+                .where(getRealmModel(table.getClassName()))
+                .findAll();
 
         for (RealmModel dataRow : data) {
             Row row = ((RealmObjectProxy) dataRow).realmGet$proxyState().getRow$realm();

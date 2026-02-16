@@ -24,7 +24,7 @@ repositories {
 ```groovy
 dependencies {
     implementation 'com.google.code.gson:gson:x.x.x'
-    implementation 'com.github.softotalss:realm_export:1.1.0'
+    implementation 'com.github.softotalss:realm_export:1.1.1'
 }
 ```
 
